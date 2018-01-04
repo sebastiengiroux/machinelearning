@@ -1,0 +1,208 @@
+---
+title: "Prediction Assignment"
+author: "Sébastien Giroux"
+date: '2018-01-04'
+output: html_document
+---
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+library(caret)
+```
+
+### Executive Summary
+One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants.
+
+The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. We will use any of the other variables to predict with.
+
+### Exploratory Data Analysis
+
+First, we loaded the training data and we displayed the number of observation and the number of variables.
+
+``` {r}
+data <- read.csv("pml-training.csv", sep=",", header=TRUE, na.strings = c("NA","",'#DIV/0!'))
+dim(data)
+```
+
+We then created 3 data sets:
+
+* validation: used to validate the final model.
+* training: used to train the different model models.
+* testing: used to validate the intermediate models and create the final model.
+
+We keep about 20% of the data for validation set, and 20% of the remaining data for the testing set.
+
+``` {r}
+inBuild <- createDataPartition(y=data$classe, p = 0.8, list = FALSE)
+validation <- data[-inBuild,]
+buildData <- data[inBuild,]
+
+inTrain <- createDataPartition(y=buildData$classe, p = 0.8, list = FALSE)
+training <- buildData[inTrain,]
+testing <- buildData[-inTrain,]
+dim(training)
+```
+
+From now on, we only modified the training set and kept the other two sets unchanged.
+
+To simplify the model, we removed the columns that had a "Near Zero Variance".  
+
+```{r}
+nzv <- nearZeroVar(training)
+training <- training[,-nzv]
+dim(training)
+```
+
+Doing a quick visual analysis of the data, we noticed that a lot of columns have mostly empty data.  Hence, we removed the columns where more than 95% of the data was NA.
+
+```{r}
+mostlyNA <- sapply(training, function(x) mean(is.na(x))) > 0.95
+training <- training[, mostlyNA == FALSE]
+dim(training)
+```
+
+Finally, to reduce the chances of a data leak, we removed the first 6 columns, which numbered the observations, added a timestamp and identified the test subjects.
+
+```{r}
+training <- training[,-c(1:6)]
+dim(training)
+```
+
+Hence, we only kept the data from accelerometers for doing the training.
+
+### How the model was built
+
+In short, we used the following strategy to solve the problem: 
+
+* We created three (3) different models to classify the data
+* Created a fourth model to decide which of the first 3 model was right
+
+#### Cross validation
+
+For cross validation, we used the following strategy for all of our models:
+
+* We separated the training sets into 5 random k-folds of equal size
+* We repeated that process twice for each model
+
+``` {r}
+control <- trainControl(method = "repeatedcv", number = 5, repeats = 2)
+```
+
+#### Model #1 - Stochastic Gradient Boosting
+
+For the 1st model, we used a Stochastic Gradient Boosting Model.
+
+``` {r}
+mod1 <- train(classe ~ ., data = training, method = "gbm", trControl = control, verbose = FALSE)
+```
+
+The results for each of the k-folds used for cross-validation are as follows:
+
+``` {r}
+mod1$resample
+```
+
+We tested the model on the testing set and printed the Confusion Matrix
+
+```{r}
+pred1 <- predict(mod1, testing)
+confMat1 <- confusionMatrix(testing$classe, pred1)
+confMat1$table
+```
+
+* The accuracy for this model: `r round(confMat1$overall['Accuracy'], 4)`
+* 95% CI for the Error rate: ( `r round(1-confMat1$overall['AccuracyUpper'], 4)`, `r round(1-confMat1$overall['AccuracyLower'], 4)`)
+
+#### Model #2 - Random Forest
+
+For the 2nd model, we used a Random Forest Model.
+
+``` {r}
+mod2 <- train(classe ~ ., data = training, method = "rf", trControl = control)
+```
+
+The results for each of the k-folds used for cross-validation are as follows:
+
+``` {r}
+mod2$resample
+```
+
+We tested the model on the testing set and printed the Confusion Matrix
+
+``` {r}
+pred2 <- predict(mod2, testing)
+confMat2 <- confusionMatrix(testing$classe, pred2)
+confMat2$table
+```
+
+* The accuracy for this model: `r round(confMat2$overall['Accuracy'], 4)`
+* 95% CI for the Error rate: ( `r round(1-confMat2$overall['AccuracyUpper'], 4)`, `r round(1-confMat2$overall['AccuracyLower'], 4)`)
+
+#### Model #3 - Naive Bayes
+
+For the 3rd model, we used a Naive Bayes Model.
+
+``` {r}
+mod3 <- suppressWarnings(train(classe ~ ., data = training, method = "nb", trControl = control))
+```
+
+The results for each of the k-folds used for cross-validation are as follows:
+
+``` {r}
+mod3$resample
+```
+
+We tested the model on the testing set and printed the Confusion Matrix
+
+``` {r}
+pred3 <- suppressWarnings(predict(mod3, testing))
+confMat3 <- confusionMatrix(testing$classe, pred3)
+confMat3$table
+```
+
+* The accuracy for this model: `r round(confMat3$overall['Accuracy'], 4)`
+* 95% CI for the Error rate: ( `r round(1-confMat3$overall['AccuracyUpper'], 4)`, `r round(1-confMat3$overall['AccuracyLower'], 4)`)
+
+#### Final Model - Random Forest that combines the predictor
+
+Finally, we fitted a model that combined the predictors.  This approach was used to improve the overall accuracy of the model.
+
+``` {r}
+predDf <- data.frame(pred1, pred2, pred3, classe = testing$classe)
+combModFit <- train( classe ~ ., method = "rf", data = predDf)
+combPred <- predict(combModFit, predDf)
+```
+
+We tested the final model on the validation set and printed the Confusion Matrix
+
+``` {r}
+pred1V <- predict(mod1, validation)
+pred2V <- predict(mod2, validation)
+pred3V <- suppressWarnings(predict(mod3, validation))
+predVDF <- data.frame(pred1 = pred1V, pred2 = pred2V, pred3 = pred3V)
+combPredV <- predict(combModFit, predVDF)
+confMatV <- confusionMatrix(validation$classe, combPredV)
+confMatV$table
+```
+
+* The accuracy for this model: `r round(confMatV$overall['Accuracy'], 4)`
+* 95% CI for the Out of Sample Error rate: ( `r round(1-confMatV$overall['AccuracyUpper'], 4)`, `r round(1-confMatV$overall['AccuracyLower'], 4)`)
+
+#### Testing the final model of the test cases
+
+You will also use your prediction model to predict 20 different test cases.
+
+We loaded the test cases.
+
+```{r}
+finalTesting <- read.csv("pml-testing.csv", sep=",", header=TRUE, na.strings = c("NA","",'#DIV/0!'))
+```
+
+We used our final model to predict and print the results.
+
+```{r}
+finalTestingPred1 <- predict(mod1, finalTesting)
+finalTestingPred2 <- predict(mod2, finalTesting)
+finalTestingPred3 <- suppressWarnings(predict(mod3, finalTesting))
+finalTestingPredDF <- data.frame(pred1 = finalTestingPred1, pred2 = finalTestingPred2, pred3 = finalTestingPred3)
+predict(combModFit, finalTestingPredDF)
+```
